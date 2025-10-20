@@ -1,0 +1,60 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Virtual envs
+.venv/
+venv/
+ENV/
+.env/
+.conda/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editors/IDE
+.vscode/
+.idea/
+*.swp
+
+# Build/packaging
+build/
+dist/
+.eggs/
+*.egg-info/
+
+# Caches
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Data/output
+/gen4_training_data/
+/retrodata_all/
+/retro_subset/
+Downloads/
+
+# Azure ML (usually contains credentials)
+.azureml/
+config.json
+
+# Large data files
+*.csv
+*.CSV
+*.xlsx
+*.XLSX
+
+# Large JSON data
+*.json
+*.JSON
+# Parquet in data dirs
+allScored_data/**/*.parquet
+raw_data/**/*.parquet
+originated_training_data/**/*.parquet
+interim_data/**/*.parquet
