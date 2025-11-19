@@ -77,7 +77,7 @@ SELECT
     COUNT(DISTINCT CASE WHEN is_loan_first_install = 1 THEN LoanID END) AS first_install_loan_count_all,
     CAST(COUNT(DISTINCT CASE WHEN is_FPDFA = 1 THEN LoanID END) AS decimal(18,4))
     / NULLIF(COUNT(DISTINCT CASE WHEN is_loan_first_install = 1 THEN LoanID END), 0)  AS FPDFA_rate
-FROM #LoanDefault_Flag
+FROM #LoanDefault_Dedup
 GROUP BY 
     FORMAT(OriginationDate, 'yyyy-MM'),
     InstallmentNumber,
