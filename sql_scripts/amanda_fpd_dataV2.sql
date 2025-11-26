@@ -71,7 +71,7 @@ WHERE rn = 1;
 
 SELECT 
     FORMAT(OriginationDate, 'yyyy-MM') AS OrigMonth,
-    InstallmentNumber,
+    InstallmentNumber,  
     Frequency,
     COUNT(DISTINCT CASE WHEN is_FPDFA = 1 THEN LoanID END) AS FPDFA_count_all,
     COUNT(DISTINCT CASE WHEN is_loan_first_install = 1 THEN LoanID END) AS first_install_loan_count_all,
