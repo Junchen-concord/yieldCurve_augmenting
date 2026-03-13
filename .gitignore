@@ -7,7 +7,9 @@ __pycache__/
 venv/
 ENV/
 .env/
+.env
 .conda/
+.cursor/
 
 # Jupyter
 .ipynb_checkpoints/
@@ -39,7 +41,10 @@ dist/
 /retrodata_all/
 /retro_subset/
 Downloads/
-
+output_data/
+payin_out/
+projection_data/
+raw_data/
 # Azure ML (usually contains credentials)
 .azureml/
 config.json
@@ -49,6 +54,7 @@ config.json
 *.CSV
 *.xlsx
 *.XLSX
+by_installment_out/
 
 # Large JSON data
 *.json
@@ -58,3 +64,8 @@ allScored_data/**/*.parquet
 raw_data/**/*.parquet
 originated_training_data/**/*.parquet
 interim_data/**/*.parquet
+
+# adhoc data analysis
+sandbox.ipynb
+# Local handoff docs for skills
+/skills/

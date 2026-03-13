@@ -18,10 +18,13 @@ LEFT JOIN LMSMaster..Installments I ON I.InstallmentID = P.InstallmentID
 LEFT JOIN LMSMaster..Application A ON A.PortfolioID=L.PortfolioID AND A.Application_ID = L.ApplicationID
 LEFT JOIN LMS_Logs..VW_ApplicationDump VW ON A.APPGUID = VW.APPGUID
 LEFT JOIN CustomerReports..EmpWhitelist WL ON VW.EmpName = WL.EmpName
-WHERE A.ApplicationDate >= '2024-08-01' AND A.ApplicationDate < '2025-11-01' 
+WHERE A.ApplicationDate >= '2023-01-01' AND A.ApplicationDate < '2025-01-01' 
 AND L.OriginationDate IS NOT NULL
 AND I.InstallmentNumber IS NOT NULL
 AND I.InstallmentNumber >= 1
+
+SELECT TOP 10 *
+FROM #LoanDefault
 
 DROP TABLE IF EXISTS #LoanDefault_Flag
 SELECT 
@@ -68,6 +71,9 @@ SELECT LoanID, Application_ID, ApplicationDate, ApplicationSteps, PortfolioID, L
 INTO #LoanDefault_Dedup
 FROM dedup
 WHERE rn = 1;
+
+SELECT TOP 10 *
+FROM #LoanDefault_Dedup
 
 SELECT 
     FORMAT(OriginationDate, 'yyyy-MM') AS OrigMonth,
