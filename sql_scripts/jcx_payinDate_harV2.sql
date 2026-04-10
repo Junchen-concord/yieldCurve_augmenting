@@ -120,9 +120,8 @@ select A.Application_ID, A.PortFolioID, A.LoanID, sum(case when P.PaymentStatus 
 sum(case when P.PaymentStatus = 'R' then 1 else 0 end) as PmtReturn, count(*) as PmtCount
 into #t4a
 from #t1 A 
-inner join Payment P on A.LoanID = P.LoanID AND P.PaymentMode NOT IN ('V','P','T','H') AND P.PaymentType NOT IN ('W','9','O') 
-                        and P.InstallmentNumber >= 1 and P.PaymentDate <= getdate() and P.PaymentStatus in ('D','R') and P.PaymentAmount>2.95 and (P.PaymentAmount > P.FeeChargePaid)
-where A.Originated=1
+inner join Payment P on A.LoanID = P.LoanID AND P.PaymentMode IN ('A','D','K','B') AND P.PaymentType IN ('Z','A','I','S','Q','X','~','3')
+                        and P.InstallmentNumber >= 1 and P.PaymentStatus in ('D')
 group by A.Application_ID, A.PortFolioID, A.LoanID
 /* =====================================================================
   summarization table - paymentDate/TrasactionDate 
