@@ -1,6 +1,7 @@
 /* =====================================================================
-   jcx_raw_harvey_v8_clean.sql
-   Clean production version — no debug queries
+   jcx_raw_harvey_v14.sql
+   Clean production version — v13 + late-joined underwriting risk bands
+   (DM_Band_Name, CM_Band_Name) from QlikDB..ScoredApplications.
    ===================================================================== */
 USE LMSMaster;
 
@@ -62,6 +63,8 @@ SELECT
     A.Application_ID, A.PortFolioID, A.LoanID,
     Inst.InstallmentNumber,
     Inst.InstallmentID,
+    CAST(Inst.DueDate AS DATE)  AS InstallmentDueDate, -- append dueDate to the data processing
+    MAX(CAST(P.PaymentDate AS DATE)) AS PaymentDate, 
     SUM(CASE WHEN P.PaymentStatus = 'D' AND P.InstallmentNumber >= 1 THEN P.PaymentAmount ELSE 0 END) AS InstallRealizedPayment,
     MAX(CASE WHEN P.PaymentStatus = 'D' AND PaymentAmount > 0 AND P.PaymentType = '3' THEN 1 ELSE 0 END) AS ThirdPartyCollected,
     MAX(CASE WHEN P.PaymentStatus = 'D' AND PaymentAmount > 0 AND P.PaymentType = 'A' THEN 1 ELSE 0 END) AS PartialCollected,
@@ -79,11 +82,11 @@ INNER JOIN Payment P
     AND P.InstallmentNumber = A.InstallmentNumber
     AND P.InstallmentID = Inst.InstallmentID
     AND P.PaymentMode IN ('A','D','K','B')
-    AND P.PaymentType IN ('Z','A','I','S','Q','X','F') -- include installment 0 for DENY NEW Case
+    AND P.PaymentType IN ('Z','A','I','S','Q','X') --  (took out F Type)include installment 0 for DENY NEW Case
     AND P.PaymentStatus IN ('D', 'F')
-WHERE Inst.DueDate < GETDATE()
+--WHERE Inst.DueDate < GETDATE()
 GROUP BY A.Application_ID, A.PortFolioID, A.LoanID,
-         Inst.InstallmentNumber, Inst.InstallmentID
+         Inst.InstallmentNumber, Inst.InstallmentID, CAST(Inst.DueDate AS DATE)
 
 
 /* =====================================================================
@@ -96,7 +99,8 @@ SELECT
     Inst.InstallmentID,
     Inst.[Status]                                                           AS installStatus,
     CAST(Inst.DueDate AS DATE)                                              AS ArrangementDueDate,
-    SUM(CASE WHEN P.PaymentStatus = 'D' THEN P.PaymentAmount ELSE 0 END)   AS ArrangementRealizedPayment
+    SUM(CASE WHEN P.PaymentStatus = 'D' THEN P.PaymentAmount ELSE 0 END)   AS ArrangementRealizedPayment,
+    MAX(CAST(P.PaymentDate AS DATE)) AS PaymentDate
 INTO #t5b
 FROM #t1 A
 INNER JOIN Installments Inst
@@ -109,7 +113,7 @@ INNER JOIN Payment P
     AND P.InstallmentNumber = Inst.InstallmentNumber
     AND P.InstallmentID = Inst.InstallmentID
     AND P.PaymentMode IN ('A','D','K','B')
-    AND P.PaymentType = '~'
+    --AND P.PaymentType = '~'
     AND P.PaymentStatus = 'D'
 WHERE Inst.DueDate < GETDATE()
 GROUP BY A.Application_ID, A.PortFolioID, A.LoanID,
@@ -126,7 +130,8 @@ SELECT
     Inst.InstallmentID,
     Inst.[Status]                                                           AS installStatus,
     CAST(Inst.DueDate AS DATE)                                              AS ThirdPartyDueDate,
-    SUM(CASE WHEN P.PaymentStatus = 'D' THEN P.PaymentAmount ELSE 0 END)   AS ThirdPartyRealizedPayment
+    SUM(CASE WHEN P.PaymentStatus = 'D' THEN P.PaymentAmount ELSE 0 END)   AS ThirdPartyRealizedPayment,
+    MAX(CAST(P.PaymentDate AS DATE)) AS PaymentDate
 INTO #t5c
 FROM #t1 A
 INNER JOIN Installments Inst
@@ -139,12 +144,28 @@ INNER JOIN Payment P
     AND P.InstallmentNumber = Inst.InstallmentNumber
     AND P.InstallmentID = Inst.InstallmentID
     AND P.PaymentMode IN ('A','D','K','B')
-    AND P.PaymentType = '3'
+    --AND P.PaymentType = '3'
     AND P.PaymentStatus = 'D'
 WHERE Inst.DueDate < GETDATE()
 GROUP BY A.Application_ID, A.PortFolioID, A.LoanID,
          Inst.InstallmentNumber, Inst.InstallmentID, Inst.[Status], CAST(Inst.DueDate AS DATE)
 
+/* =====================================================================
+   SECTION 3a: Normal Installment DENY NEW Helper
+   ===================================================================== */
+DROP TABLE IF EXISTS #t_attempt
+SELECT DISTINCT A.LoanID,
+    MAX(CASE WHEN P.PaymentStatus NOT IN ('P','F') 
+        AND P.InstallmentNumber >= 1 
+        AND P.PaymentType IN ('I','Z','S','Q')
+        THEN 1 ELSE 0 END) AS hasPaymentAttempt
+INTO #t_attempt
+FROM (SELECT DISTINCT Application_ID, PortFolioID, LoanID, iPaymentMode FROM #t1) A
+INNER JOIN Payment P ON A.LoanID = P.LoanID
+    AND P.PaymentMode IN ('A','D','K','B')
+    AND P.InstallmentNumber >= 1
+    AND A.iPaymentMode = 144
+GROUP BY A.LoanID
 
 /* =====================================================================
    SECTION 4: Normal Installment Summary with Flags (#t17a)
@@ -161,14 +182,16 @@ SELECT
     A.iPaymentMode,
     A.LoanStatus,
     A.InstallmentNumber,
+    A.InstallmentDueDate,  -- append installment Due date
+    instA.PaymentDate,
     COALESCE(instA.InstallRealizedPayment, 0)   AS InstallRealizedPayment,
     A.installStatus,
 
-    /* *************** isRecentInstall *************** */
+    /* *************** isRecentLoan *************** */
     CASE
-        WHEN A.installStatus = 684 AND A.LoanStatus IN ('D','P','N') THEN 1
+        WHEN A.installStatus = 684 AND A.LoanStatus IN ('N') THEN 1
         ELSE 0
-    END AS isRecentInstall,
+    END AS isRecentLoan,
 
     /* *************** LoanPaidOffThisInstall *************** */
     CASE
@@ -208,8 +231,8 @@ WHEN A.installStatus = 825                                                  THEN
      AND MIN(A.installStatus) OVER (PARTITION BY A.LoanID) = 684
      AND MAX(A.installStatus) OVER (PARTITION BY A.LoanID) = 684
      AND A.LoanStatus IN ('R')
-      AND A.InstallmentNumber = 1                                         THEN 1
-
+     --AND COALESCE(InstallRealizedPayment, 0) = 0 
+     AND A.InstallmentNumber = 1                                        THEN 1
 
     -- All voided
     WHEN A.installStatus = 115
@@ -217,17 +240,24 @@ WHEN A.installStatus = 825                                                  THEN
          AND MAX(A.installStatus) OVER (PARTITION BY A.LoanID) = 115
          AND A.InstallmentNumber = 1                                        THEN 1
 
-    
-
     -- Bad loan status + bad installment status (no recovery ahead)
     WHEN A.LoanStatus NOT IN ('D', 'P')
          AND A.installStatus NOT IN (111, 115, 779, 684)                   THEN 1
 
-    -- Abandoned loan: paid install followed by pending, loan returned (no recovery ahead)
-    WHEN A.installStatus IN (111, 779)
-         AND LEAD(A.installStatus) OVER (PARTITION BY A.LoanID
-                                         ORDER BY A.InstallmentNumber) = 684
-         AND A.LoanStatus NOT IN ('D', 'P')                                THEN 1
+    -- Abandoned loan: first pending install after paid, loan returned
+    WHEN A.installStatus = 684
+     AND LAG(A.installStatus) OVER (PARTITION BY A.LoanID
+                                    ORDER BY A.InstallmentNumber) IN (111, 779)
+     AND A.LoanStatus NOT IN ('D', 'P', 'N')                                                THEN 1
+
+    -- 786 & 825 on paid-off loan with no payment — terminal (money stopped coming in)
+     WHEN A.installStatus IN (786, 825)
+     AND A.LoanStatus = 'D'
+     AND COALESCE(InstallRealizedPayment, 0) = 0
+     AND LAG(COALESCE(InstallRealizedPayment, 0)) OVER (PARTITION BY A.LoanID 
+                                                         ORDER BY A.InstallmentNumber) > 0
+     THEN 1
+
 
     -- Good installment statuses
     WHEN A.installStatus = 111                                              THEN 0
@@ -236,15 +266,15 @@ WHEN A.installStatus = 825                                                  THEN
     ELSE 0
 END AS isLoanDefault,
 
-
     /* *************** isInstallDefault *************** */
     CASE
         -- Deny new
         WHEN A.installStatus = 684
             AND MIN(A.installStatus) OVER (PARTITION BY A.LoanID) = 684
             AND MAX(A.installStatus) OVER (PARTITION BY A.LoanID) = 684
-             AND A.LoanStatus IN ('R')
-              AND A.InstallmentNumber = 1                                  THEN 1
+            AND A.LoanStatus IN ('R')
+            --AND COALESCE(InstallRealizedPayment, 0) = 0
+            AND A.InstallmentNumber = 1                                  THEN 1
 
         -- Bad status code (includes 825, 786, etc.)
         WHEN A.installStatus NOT IN (111, 779, 684)                         THEN 1
@@ -255,23 +285,13 @@ END AS isLoanDefault,
                                             ORDER BY A.InstallmentNumber) <> 111 THEN 1
 
         -- Abandoned loan: inherit from loan default
-        WHEN A.installStatus IN (111, 779)
-             AND LEAD(A.installStatus) OVER (PARTITION BY A.LoanID
-                                             ORDER BY A.InstallmentNumber) = 684
-             AND A.LoanStatus = 'R'                                         THEN 1
+        WHEN A.installStatus = 684
+        AND LAG(A.installStatus) OVER (PARTITION BY A.LoanID
+                                    ORDER BY A.InstallmentNumber) IN (111, 779)
+        AND A.LoanStatus NOT IN ('D', 'P', 'N')                                                THEN 1
         ELSE 0
     END AS isInstallDefault,
-    /* *************** isDenyNew *************** */
-        CASE
-            WHEN A.installStatus = 684
-                AND MIN(A.installStatus) OVER (PARTITION BY A.LoanID) = 684
-                AND MAX(A.installStatus) OVER (PARTITION BY A.LoanID) = 684 
-                AND A.LoanStatus IN ('R')
-                 AND A.InstallmentNumber = 1
-                              THEN 1
-            ELSE 0
-        END AS isDenyNew,
-
+    
         /* *************** isDefaultBeforeFirst *************** */
         CASE
             WHEN A.installStatus = 115
@@ -280,6 +300,18 @@ END AS isLoanDefault,
                 AND A.InstallmentNumber = 1                THEN 1
             ELSE 0
         END AS isAllVoided,
+        /* *************** isDenyNew *************** */
+        CASE
+            WHEN A.installStatus = 684
+                AND MIN(A.installStatus) OVER (PARTITION BY A.LoanID) = 684
+                AND MAX(A.installStatus) OVER (PARTITION BY A.LoanID) = 684 
+                AND A.LoanStatus IN ('R')
+                AND COALESCE(att.hasPaymentAttempt, 0) = 0
+                --AND  COALESCE(InstallRealizedPayment, 0) = 0 -- added a more restrictive check to contain installmet realzied payment
+                AND A.InstallmentNumber = 1
+                              THEN 1
+            ELSE 0
+        END AS isDenyNew,
 
 
     instA.ThirdPartyCollected,
@@ -297,7 +329,9 @@ LEFT JOIN #t5a AS instA
     ON A.LoanID = instA.LoanID
     AND A.InstallmentID = instA.InstallmentID
     AND A.InstallmentNumber = instA.InstallmentNumber
+LEFT JOIN #t_attempt att ON A.LoanID = att.LoanID -- Accurate DENY NEW Catcher
 WHERE A.iPaymentMode = 144
+
 
 
 /* =====================================================================
@@ -322,8 +356,31 @@ OR (
         WHERE sub.LoanID = t17a.LoanID
           AND (sub.LoanPaidOffThisInstall = 1 OR sub.isLoanDefault = 1)
     )
-    AND (t17a.isRecentInstall = 0 OR t17a.InstallmentNumber = 1)
+    AND (t17a.isRecentLoan = 0 OR t17a.InstallmentNumber = 1 OR COALESCE(t17a.InstallRealizedPayment, 0) > 0)
+
 )
+
+/* =====================================================================
+   SECTION 5b: Underwriting Risk Bands (Late Join Source)
+   ---------------------------------------------------------------------
+   Pulls DM_Band_Name and CM_Band_Name from QlikDB..ScoredApplications.
+   These are the bucketed underwriting scores already maintained by the
+   scoring team — version-agnostic and ops-interpretable. Deduped per
+   (Application_ID, PortFolioID) since rescores can produce multiple rows.
+   We take MAX of each band name; if multiple distinct bands are returned
+   per application the QC cell in the notebook will flag the rate.
+   ===================================================================== */
+DROP TABLE IF EXISTS #sa_bands
+SELECT
+    Application_ID,
+    PortFolioID,
+    MAX(DM_Band_Name) AS DM_Band_Name,
+    MAX(CM_Band_Name) AS CM_Band_Name
+INTO #sa_bands
+FROM QlikDB..ScoredApplications
+WHERE Application_ID IS NOT NULL
+GROUP BY Application_ID, PortFolioID
+
 
 /* =====================================================================
    SECTION 6: Combined Final Table (Normal + Arrangement + 3rd Party)
@@ -333,8 +390,8 @@ DROP TABLE IF EXISTS #t17_stacked
 SELECT 
     Application_ID, PortFolioID, LoanID,
     InstallmentNumber, InstallRealizedPayment, installStatus, iPaymentMode,
-    TotalInstallsNumber,
-    isRecentInstall, LoanPaidOffThisInstall, isLoanDefault, isInstallDefault,
+    TotalInstallsNumber, InstallmentDueDate,PaymentDate,
+    isRecentLoan, LoanPaidOffThisInstall, isLoanDefault, isInstallDefault,
     ThirdPartyCollected, PartialCollected, InstallCollected, EarlyCollected,
     isDenyNew, isAllVoided,
     0 AS isArrangementInstall, 0 AS is3rdPartyInstall
@@ -346,7 +403,7 @@ UNION ALL
 SELECT
     a.Application_ID, a.PortFolioID, a.LoanID,
     b.InstallmentNumber, b.ArrangementRealizedPayment, b.installStatus, 679 AS iPaymentMode,
-    a.TotalInstallsNumber,
+    a.TotalInstallsNumber, b.ArrangementDueDate AS InstallmentDueDate, PaymentDate,
     0, 0, 0, 0,
     0, 0, 0, 0,
     0, 0,
@@ -360,7 +417,7 @@ UNION ALL
 SELECT
     a.Application_ID, a.PortFolioID, a.LoanID,
     c.InstallmentNumber, c.ThirdPartyRealizedPayment, c.installStatus, 685 AS iPaymentMode,
-    a.TotalInstallsNumber,
+    a.TotalInstallsNumber, c.ThirdPartyDueDate AS InstallmentDueDate, PaymentDate,
     0, 0, 0, 0,
     0, 0, 0, 0,
     0, 0,
@@ -369,14 +426,16 @@ FROM (SELECT DISTINCT Application_ID, PortFolioID, LoanID, TotalInstallsNumber
       FROM #t17a_final) a
 INNER JOIN #t5c c ON a.LoanID = c.LoanID
 
--- Step 2: Join loan-level columns once
+-- Step 2: Join loan-level columns once (+ risk bands via late join)
 DROP TABLE IF EXISTS #t17_combined
 SELECT
     s.*,
     t4.TotalRealizedPayment,
     t1.AppYear, t1.AppMonth, t1.AppWeek,
     t1.LoanStatus,  t1.CustType, t1.Frequency,
-    t1.OriginatedAmount, t1.OriginationDate
+    t1.OriginatedAmount, t1.OriginationDate,
+    sb.DM_Band_Name,
+    sb.CM_Band_Name
 INTO #t17_combined
 FROM #t17_stacked s
 LEFT JOIN #t4 t4 ON s.LoanID = t4.LoanID AND s.Application_ID = t4.Application_ID
@@ -385,8 +444,16 @@ LEFT JOIN (SELECT DISTINCT Application_ID, PortFolioID, LoanID,
                   Frequency, OriginatedAmount, OriginationDate
            FROM #t1) t1
     ON s.LoanID = t1.LoanID AND s.Application_ID = t1.Application_ID
+LEFT JOIN #sa_bands sb
+    ON s.Application_ID = sb.Application_ID
+   AND s.PortFolioID    = sb.PortFolioID
 
 
+DROP TABLE IF EXISTS #t17_mfg
+SELECT *,
+    ROW_NUMBER() OVER (PARTITION BY LoanID ORDER BY iPaymentMode, InstallmentNumber) AS InstallmentNumberMFG
+INTO #t17_mfg
+FROM #t17_combined
 
 DROP TABLE IF EXISTS #monthly_summary
 SELECT

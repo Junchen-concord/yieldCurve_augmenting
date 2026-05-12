@@ -10,6 +10,7 @@ ENV/
 .env
 .conda/
 .cursor/
+.claude/
 
 # Jupyter
 .ipynb_checkpoints/
