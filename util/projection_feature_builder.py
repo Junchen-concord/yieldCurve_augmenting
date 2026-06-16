@@ -309,6 +309,8 @@ def build_seq_features(
         seq[c] = pd.to_numeric(seq[c], errors="coerce").replace([np.inf, -np.inf], np.nan).fillna(0).astype(int)
     seq["collected_flag_k"] = seq[collected_cols].max(axis=1).fillna(0).astype(int)
     seq["collected_amount_k"] = pd.to_numeric(seq["InstallRealizedPayment"], errors="coerce").fillna(0.0)
+    if "InstallmentDueAmount" in seq.columns:
+        seq["InstallmentDueAmount"] = pd.to_numeric(seq["InstallmentDueAmount"], errors="coerce")
     seq["step_payin_ratio_k"] = (
         seq["collected_amount_k"] / seq["OriginatedAmount"].replace(0, np.nan)
     ).fillna(0.0)

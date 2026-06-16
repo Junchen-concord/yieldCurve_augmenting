@@ -23,6 +23,7 @@ SELECT
     Inst.InstallmentID,
     Inst.iPaymentMode,
     CAST(Inst.DueDate AS DATE)                  AS InstallmentDueDate,
+    Inst.DueAmount                              AS InstallmentDueAmount,
     CASE WHEN L.LoanStatus NOT IN ('V','W','G','K') THEN L.OriginatedAmount ELSE NULL END AS OriginatedAmount,
     CAST(OriginationDate AS DATE)               AS OriginationDate,
     CASE WHEN (ApplicationSteps NOT LIKE '%R%' AND A.ApplicationSteps NOT LIKE '%O%') THEN 'NEW' ELSE 'RETURN' END AS CustType,
@@ -157,7 +158,7 @@ DROP TABLE IF EXISTS #t_attempt
 SELECT DISTINCT A.LoanID,
     MAX(CASE WHEN P.PaymentStatus NOT IN ('P','F') 
         AND P.InstallmentNumber >= 1 
-        AND P.PaymentType IN ('I','Z','S','Q')
+        AND P.PaymentType IN ('I','Z','S','Q','A')
         THEN 1 ELSE 0 END) AS hasPaymentAttempt
 INTO #t_attempt
 FROM (SELECT DISTINCT Application_ID, PortFolioID, LoanID, iPaymentMode FROM #t1) A
@@ -183,6 +184,7 @@ SELECT
     A.LoanStatus,
     A.InstallmentNumber,
     A.InstallmentDueDate,  -- append installment Due date
+    A.InstallmentDueAmount,
     instA.PaymentDate,
     COALESCE(instA.InstallRealizedPayment, 0)   AS InstallRealizedPayment,
     A.installStatus,
@@ -390,7 +392,7 @@ DROP TABLE IF EXISTS #t17_stacked
 SELECT 
     Application_ID, PortFolioID, LoanID,
     InstallmentNumber, InstallRealizedPayment, installStatus, iPaymentMode,
-    TotalInstallsNumber, InstallmentDueDate,PaymentDate,
+    TotalInstallsNumber, InstallmentDueDate, InstallmentDueAmount, PaymentDate,
     isRecentLoan, LoanPaidOffThisInstall, isLoanDefault, isInstallDefault,
     ThirdPartyCollected, PartialCollected, InstallCollected, EarlyCollected,
     isDenyNew, isAllVoided,
@@ -403,7 +405,7 @@ UNION ALL
 SELECT
     a.Application_ID, a.PortFolioID, a.LoanID,
     b.InstallmentNumber, b.ArrangementRealizedPayment, b.installStatus, 679 AS iPaymentMode,
-    a.TotalInstallsNumber, b.ArrangementDueDate AS InstallmentDueDate, PaymentDate,
+    a.TotalInstallsNumber, b.ArrangementDueDate AS InstallmentDueDate, NULL AS InstallmentDueAmount, PaymentDate,
     0, 0, 0, 0,
     0, 0, 0, 0,
     0, 0,
@@ -417,7 +419,7 @@ UNION ALL
 SELECT
     a.Application_ID, a.PortFolioID, a.LoanID,
     c.InstallmentNumber, c.ThirdPartyRealizedPayment, c.installStatus, 685 AS iPaymentMode,
-    a.TotalInstallsNumber, c.ThirdPartyDueDate AS InstallmentDueDate, PaymentDate,
+    a.TotalInstallsNumber, c.ThirdPartyDueDate AS InstallmentDueDate, NULL AS InstallmentDueAmount, PaymentDate,
     0, 0, 0, 0,
     0, 0, 0, 0,
     0, 0,

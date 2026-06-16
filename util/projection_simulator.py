@@ -261,19 +261,56 @@ def observed_outcomes_from_seq_base(
 # ---------------------------------------------------------------------------
 
 
+def _capped_model_amount(
+    preds: pd.DataFrame,
+    seq: pd.DataFrame,
+    use_unconditional: bool,
+    cap_at_due: bool,
+) -> np.ndarray:
+    """Per-row model amount for the payin matrices.
+
+    use_unconditional (default False): multiply by marginal p_collected.
+    2026-06-11: default flipped back to CONDITIONAL. The matrix cells are
+    class-conditional paths ("payin GIVEN the loan ends Clean") and Stage A's
+    class probabilities already price default risk -- multiplying by the
+    marginal p_collected double-counts it (live points collapsed to ~1.1).
+    The day-zero spike was the regressor's inflated amounts, which cap_at_due
+    fixes on its own.
+
+    cap_at_due: cap each row at its contractual InstallmentDueAmount when the
+    column is present. A normal-stream installment cannot be expected to
+    collect more than the schedule asks for; this also stops early-payoff
+    lumps learned by the regressor from being counted once per future row.
+    Skipped when the column is absent (older extracts).
+    """
+    amount_col = "e_amount" if use_unconditional else "e_amount_if_collected"
+    amount = preds[amount_col].to_numpy(dtype=float)
+    if cap_at_due and "InstallmentDueAmount" in seq.columns:
+        due = pd.to_numeric(seq["InstallmentDueAmount"], errors="coerce").to_numpy(dtype=float)
+        has_due = np.isfinite(due) & (due > 0)
+        amount = np.where(has_due, np.minimum(amount, due), amount)
+    return amount
+
+
 def build_loan_class_payin_matrix(
     holdout_loans: pd.DataFrame,
     holdout_seq: pd.DataFrame,
     stage_b_model,
     default_inst_by_class: Optional[Dict[str, Optional[int]]] = None,
+    use_unconditional: bool = False,
+    cap_at_due: bool = True,
 ) -> pd.DataFrame:
     """Pre-compute per-(loan, class) expected payin from Stage B predictions.
 
     For each class c with default installment d(c):
-      - Clean (d = None):  sum e_amount_if_collected over all installments.
+      - Clean (d = None):  sum the per-row model amount over all installments.
       - xPD  (d = int):    sum over installments 1..d-1 only (pre-default).
     The matrix is computed once and re-used across all MC sims + all k-values,
     so Stage B scoring stays O(n_installments) rather than O(n_sims * n_loans).
+
+    2026-06-11: rows use the CONDITIONAL amount capped at the contractual
+    InstallmentDueAmount (class-conditional semantics; see _capped_model_amount
+    and skills/0610_dayzero_projection_fix_plan_v1.md).
     """
     from .projection_stage_b import predict_expected_amount
 
@@ -281,7 +318,7 @@ def build_loan_class_payin_matrix(
     preds = predict_expected_amount(stage_b_model, holdout_seq)
 
     scored = holdout_seq[["LoanID", "InstallmentNumber"]].copy()
-    scored["e_amount_if_collected"] = preds["e_amount_if_collected"].values
+    scored["model_amount"] = _capped_model_amount(preds, holdout_seq, use_unconditional, cap_at_due)
 
     orig = holdout_loans.set_index("LoanID")["OriginatedAmount"].astype(float)
     matrix = pd.DataFrame(0.0, index=orig.index, columns=PAYOFF_TYPE_COLLAPSED_ORDER)
@@ -289,7 +326,7 @@ def build_loan_class_payin_matrix(
     for cls in PAYOFF_TYPE_COLLAPSED_ORDER:
         d = dmap.get(cls)
         sub = scored if d is None else scored[scored["InstallmentNumber"] < d]
-        summed = sub.groupby("LoanID")["e_amount_if_collected"].sum()
+        summed = sub.groupby("LoanID")["model_amount"].sum()
         matrix[cls] = (summed / orig).reindex(matrix.index).fillna(0.0)
 
     return matrix
@@ -300,12 +337,21 @@ def build_live_loan_class_payin_matrix(
     seq_features: pd.DataFrame,
     stage_b_model,
     default_inst_by_class: Optional[Dict[str, Optional[int]]] = None,
+    use_unconditional: bool = False,
+    cap_at_due: bool = True,
+    floor_at_realized: bool = True,
 ) -> pd.DataFrame:
     """Build a live inference payin matrix anchored to observed dollars.
 
     Observed installments use actual collected dollars as of the valuation date.
-    Future installments use Stage B's conditional expected amount. Each terminal
-    class still controls how far the normal-payment stream is allowed to run.
+    Future installments use Stage B's CONDITIONAL expected amount capped at the
+    contractual InstallmentDueAmount when available (class-conditional
+    semantics; see _capped_model_amount). Each terminal class still controls
+    how far the normal-payment stream is allowed to run.
+
+    floor_at_realized: every class path is floored at the loan's realized payin
+    to date -- dollars already collected cannot be lost whatever class the loan
+    ends in (closes the Confluence "floor class-conditional paths" gap).
     """
     from .projection_stage_b import predict_expected_amount
 
@@ -322,11 +368,11 @@ def build_live_loan_class_payin_matrix(
         if "is_observed" in seq_features.columns
         else True
     )
-    scored["e_amount_if_collected"] = preds["e_amount_if_collected"].values
+    scored["model_amount"] = _capped_model_amount(preds, seq_features, use_unconditional, cap_at_due)
     scored["projected_amount"] = np.where(
         scored["is_observed"],
         pd.to_numeric(scored["collected_amount_k"], errors="coerce").fillna(0.0),
-        scored["e_amount_if_collected"],
+        scored["model_amount"],
     )
 
     for cls in PAYOFF_TYPE_COLLAPSED_ORDER:
@@ -335,7 +381,18 @@ def build_live_loan_class_payin_matrix(
         summed = sub.groupby("LoanID")["projected_amount"].sum()
         matrix[cls] = (summed / orig.replace(0, np.nan)).reindex(matrix.index).fillna(0.0)
 
-    return matrix.clip(lower=0.0)
+    matrix = matrix.clip(lower=0.0)
+    if floor_at_realized and "payin_ratio_realized" in loan_features.columns:
+        realized = (
+            pd.to_numeric(
+                loan_features.set_index("LoanID")["payin_ratio_realized"], errors="coerce"
+            )
+            .reindex(matrix.index)
+            .fillna(0.0)
+            .clip(lower=0.0)
+        )
+        matrix = matrix.clip(lower=realized, axis=0)
+    return matrix
 
 
 def simulate_portfolio_ci_stage_b(
@@ -404,13 +461,17 @@ def apply_stage_c_recovery(
     The function is pure: Option 1 (class broadcast) and Option 2 (per-loan
     recovery model) both produce a DataFrame of the same shape and flow
     through this same call.
+
+    The outstanding proxy is clipped at zero: when a path already sits at or
+    above 1.0 (e.g. floored at realized payin > 1), there is no outstanding
+    principal left to recover -- recovery must never SUBTRACT payin.
     """
     if not payin_matrix.index.equals(recovery_fraction_matrix.index):
         raise ValueError("payin_matrix and recovery_fraction_matrix index mismatch")
     if not payin_matrix.columns.equals(recovery_fraction_matrix.columns):
         raise ValueError("payin_matrix and recovery_fraction_matrix column mismatch")
 
-    return payin_matrix + recovery_fraction_matrix * (1.0 - payin_matrix)
+    return payin_matrix + recovery_fraction_matrix * (1.0 - payin_matrix).clip(lower=0.0)
 
 
 # ---------------------------------------------------------------------------
